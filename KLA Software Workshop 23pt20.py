@@ -469,39 +469,545 @@ def solve_M3(data):
         "TotalTime": round(total_time, 15),
         "Path": path
     }
+'''
+def manhattan_dist(a, b):
+    return abs(a[0] - b[0]) + abs(a[1] - b[1])
+
+def segment_intersects_rect(p1, p2, rect):
+    x1, y1 = p1
+    x2, y2 = p2
+    rx1, ry1, rx2, ry2 = rect
+
+    if x1 == x2: 
+        if rx1 < x1 < rx2:
+            return not (max(y1, y2) <= ry1 or min(y1, y2) >= ry2)
+
+    if y1 == y2: 
+        if ry1 < y1 < ry2:
+            return not (max(x1, x2) <= rx1 or min(x1, x2) >= rx2)
+
+    return False
+
+def path_clear(path, forbidden):
+    for i in range(len(path) - 1):
+        for rect in forbidden:
+            if segment_intersects_rect(path[i], path[i + 1], rect):
+                return False
+    return True
+
+def manhattan_paths(A, B):
+    x0, y0 = A
+    x1, y1 = B
+    return [
+        [A, [x1, y0], B],
+        [A, [x0, y1], B]
+    ]
+
+def detour_paths(A, B, rect, eps=1e-6):
+    rx1, ry1, rx2, ry2 = rect
+    x0, y0 = A
+    x1, y1 = B
+
+    paths = []
+    xs = [rx1 - eps, rx2 + eps]
+    ys = [ry1 - eps, ry2 + eps]
+
+    for x in xs:
+        paths.append([A, [x, y0], [x, y1], B])
+    for y in ys:
+        paths.append([A, [x0, y], [x1, y], B])
+
+    return paths
+
+def path_length(path):
+    return sum(manhattan_dist(path[i], path[i + 1]) for i in range(len(path) - 1))
+
+def find_best_path(A, B, forbidden):
+    candidates = []
+
+    for p in manhattan_paths(A, B):
+        if path_clear(p, forbidden):
+            candidates.append(p)
+
+    if candidates:
+        return min(candidates, key=path_length)
+
+    for rect in forbidden:
+        for p in detour_paths(A, B, rect):
+            if path_clear(p, forbidden):
+                candidates.append(p)
+
+    if not candidates:
+        raise RuntimeError("No valid path found")
+
+    return min(candidates, key=path_length)
+
+
+def solve_M4(data):
+    pos = data["InitialPosition"][:]
+    angle = data["InitialAngle"]
+
+    vmax = data["StageVelocity"]
+    amax = data["StageAcceleration"]
+    cam_v = data["CameraVelocity"]
+    cam_a = data["CameraAcceleration"]
+
+    forbidden = [
+        (
+            z["BottomLeft"][0],
+            z["BottomLeft"][1],
+            z["TopRight"][0],
+            z["TopRight"][1]
+        )
+        for z in data["ForbiddenZones"]
+    ]
+
+    total_time = 0.0
+    full_path = [pos[:]]
+
+    for die in data["Dies"]:
+        target = find_centre(die["Corners"])
+        target_angle = find_angle(die["Corners"])
+
+        polyline = find_best_path(pos, target, forbidden)
+
+        for i in range(1, len(polyline)):
+            d = manhattan_dist(polyline[i - 1], polyline[i])
+            t_stage = trap_time(d, vmax, amax)
+            t_cam = trap_time(angle_diff(angle, target_angle), cam_v, cam_a)
+            total_time += max(t_stage, t_cam)
+            full_path.append(polyline[i])
+
+        pos = target[:]
+        angle = target_angle
+
+    return {
+        "TotalTime": round(total_time, 6),
+        "Path": full_path
+    }
+'''
+import heapq
+
+def euclid(a, b):
+    return math.hypot(a[0] - b[0], a[1] - b[1])
+
+def inside_wafer(p, R):
+    return p[0]*p[0] + p[1]*p[1] <= R*R + 1e-9
+
+def ccw(A, B, C):
+    return (C[1]-A[1])*(B[0]-A[0]) > (B[1]-A[1])*(C[0]-A[0])
+
+def segments_intersect(A, B, C, D):
+    return ccw(A, C, D) != ccw(B, C, D) and ccw(A, B, C) != ccw(A, B, D)
+
+'''def point_on_segment(P, A, B, eps=1e-9):
+    x, y = P
+    x1, y1 = A
+    x2, y2 = B
+
+    # Collinear check
+    cross = (x - x1) * (y2 - y1) - (y - y1) * (x2 - x1)
+    if abs(cross) > eps:
+        return False
+
+    # Within bounding box
+    if min(x1, x2) - eps <= x <= max(x1, x2) + eps and min(y1, y2) - eps <= y <= max(y1, y2) + eps:
+        return True
+
+    return False
+'''
+def point_on_segment(p, a, b, eps=1e-9):
+    # Check if p lies on segment a-b
+    cross = (p[0] - a[0]) * (b[1] - a[1]) - (p[1] - a[1]) * (b[0] - a[0])
+    if abs(cross) > eps:
+        return False
+
+    dot = (p[0] - a[0]) * (b[0] - a[0]) + (p[1] - a[1]) * (b[1] - a[1])
+    if dot < 0:
+        return False
+
+    sq_len = (b[0] - a[0])**2 + (b[1] - a[1])**2
+    if dot > sq_len:
+        return False
+
+    return True
+def get_forbidden_corners(forbidden):
+    corners = []
+    for x1, y1, x2, y2 in forbidden:
+        corners.extend([
+            [x1, y1],
+            [x1, y2],
+            [x2, y1],
+            [x2, y2]
+        ])
+    return corners
+def insert_corner_points(path, forbidden, eps=1e-9):
+    refined = []
+    corners = get_forbidden_corners(forbidden)
+
+    def same(p, q):
+        return abs(p[0] - q[0]) < eps and abs(p[1] - q[1]) < eps
+
+    for i in range(len(path) - 1):
+        a = path[i]
+        b = path[i + 1]
+
+        # collect corners lying strictly inside segment a-b
+        on_seg = []
+        for c in corners:
+            if point_on_segment(c, a, b):
+                on_seg.append(c)
+
+        # sort by distance from a
+        on_seg.sort(key=lambda p: (p[0] - a[0])**2 + (p[1] - a[1])**2)
+
+        if not refined:
+            refined.append(a)
+
+        for p in on_seg:
+            if not same(refined[-1], p):
+                refined.append(p)
+
+        if not same(refined[-1], b):
+            refined.append(b)
+
+    return refined
+def segment_intersects_rect(p1, p2, rect):
+    x1, y1, x2, y2 = rect
+
+    # Rectangle corners
+    corners = [
+        [x1, y1], [x1, y2],
+        [x2, y1], [x2, y2]
+    ]
+
+    # ✅ If segment touches ONLY corners → allow
+    for c in corners:
+        if point_on_segment(c, p1, p2):
+            # touching a corner is allowed
+            pass
+
+    # ✅ If either endpoint is strictly inside → block
+    if (x1 < p1[0] < x2 and y1 < p1[1] < y2) or (x1 < p2[0] < x2 and y1 < p2[1] < y2):
+        return True
+
+    # Rectangle edges
+    edges = [
+        ([x1, y1], [x2, y1]),
+        ([x2, y1], [x2, y2]),
+        ([x2, y2], [x1, y2]),
+        ([x1, y2], [x1, y1]),
+    ]
+
+    # ✅ If segment lies exactly on an edge → allow
+    for e1, e2 in edges:
+        if point_on_segment(p1, e1, e2) and point_on_segment(p2, e1, e2):
+            return False
+
+    # ✅ If segment intersects edge at a non‑corner point → block
+    for e1, e2 in edges:
+        if segments_intersect(p1, p2, e1, e2):
+            # Check if intersection is a corner
+            for c in corners:
+                if point_on_segment(c, p1, p2) and point_on_segment(c, e1, e2):
+                    # touching corner → allowed
+                    break
+            else:
+                return True  # real intersection
+
+    return False
+
+
+def segment_valid(p1, p2, forbidden, wafer_radius):
+    if not inside_wafer(p1, wafer_radius) or not inside_wafer(p2, wafer_radius):
+        return False
+    for rect in forbidden:
+        if segment_intersects_rect(p1, p2, rect):
+            return False
+    return True
+
+def inside_forbidden(p, forbidden):
+    x, y = p
+    for rx1, ry1, rx2, ry2 in forbidden:
+        if rx1 < x < rx2 and ry1 < y < ry2:
+            return True
+    return False
+
+import random
+
+def shortest_path(start, goal, forbidden, wafer_radius):
+    nodes = [start, goal]
+
+    # 1) Rectangle corners
+    for r in forbidden:
+        x1, y1, x2, y2 = r
+        corners = [
+            [x1, y1],
+            [x1, y2],
+            [x2, y1],
+            [x2, y2]
+        ]
+        nodes.extend(corners)
+
+    # 2) Rectangle edge midpoints (still on edges, not inside)
+    for r in forbidden:
+        x1, y1, x2, y2 = r
+        candidates = [
+            [(x1 + x2) / 2.0, y1],
+            [(x1 + x2) / 2.0, y2],
+            [x1, (y1 + y2) / 2.0],
+            [x2, (y1 + y2) / 2.0],
+        ]
+        nodes.extend(candidates)
+
+    # 3) Free-space random samples inside wafer, outside forbidden
+    N_SAMPLES = 200          # you can tune this (100–400)
+    for _ in range(N_SAMPLES):
+        # Sample in bounding box of wafer
+        R = wafer_radius
+        x = random.uniform(-R, R)
+        y = random.uniform(-R, R)
+        p = [x, y]
+        if not inside_wafer(p, wafer_radius):
+            continue
+        if inside_forbidden(p, forbidden):  # strict interior check
+            continue
+        nodes.append(p)
+
+    # Deduplicate and filter again
+    unique_nodes = []
+    seen = set()
+    for p in nodes:
+        tp = (round(p[0], 6), round(p[1], 6))
+        if tp in seen:
+            continue
+        seen.add(tp)
+        if not inside_wafer(p, wafer_radius):
+            continue
+        if inside_forbidden(p, forbidden):
+            continue
+        unique_nodes.append(p)
+
+    nodes = unique_nodes
+
+    # Build visibility graph: edges between any pair with a valid segment
+    adj = {tuple(p): [] for p in nodes}
+
+    for i in range(len(nodes)):
+        for j in range(i + 1, len(nodes)):
+            p = nodes[i]
+            q = nodes[j]
+            if segment_valid(p, q, forbidden, wafer_radius):
+                d = euclid(p, q)
+                adj[tuple(p)].append((tuple(q), d))
+                adj[tuple(q)].append((tuple(p), d))
+
+    start_t = tuple(start)
+    goal_t  = tuple(goal)
+
+    # Dijkstra
+    pq = [(0.0, start_t, None)]
+    dist = {start_t: 0.0}
+    parent = {}
+
+    while pq:
+        cd, u, par = heapq.heappop(pq)
+        if u in parent:
+            continue
+        parent[u] = par
+        if u == goal_t:
+            break
+        for v, w in adj[u]:
+            nd = cd + w
+            if v not in dist or nd < dist[v]:
+                dist[v] = nd
+                heapq.heappush(pq, (nd, v, u))
+
+    # If no path found in graph, fall back to direct segment (or handle as unreachable)
+    if goal_t not in parent:
+        return [start, goal]
+
+    # Reconstruct path
+    path = []
+    cur = goal_t
+    while cur is not None:
+        path.append(list(cur))
+        cur = parent.get(cur)
+    path.reverse()
+    return path
+
+def solve_M4(data):
+    pos = data["InitialPosition"][:]
+    angle = data["InitialAngle"]
+
+    vmax = data["StageVelocity"]
+    amax = data["StageAcceleration"]
+    cam_v = data["CameraVelocity"]
+    cam_a = data["CameraAcceleration"]
+
+    wafer_radius = data["WaferDiameter"] / 2
+
+    forbidden = [
+        (
+            z["BottomLeft"][0],
+            z["BottomLeft"][1],
+            z["TopRight"][0],
+            z["TopRight"][1]
+        )
+        for z in data["ForbiddenZones"]
+    ]
+
+    dies = data["Dies"]
+    centers = [find_centre(d["Corners"]) for d in dies]
+    angles  = [find_angle(d["Corners"]) for d in dies]
+
+    n = len(dies)
+    unvisited = set(range(n))
+
+    total_time = 0.0
+    full_path = [pos[:]]
+
+    while unvisited:
+        best_i = None
+        best_cost = float("inf")
+        best_polyline = None
+
+       
+        for i in unvisited:
+            target = centers[i]
+
+            polyline = shortest_path(pos, target, forbidden, wafer_radius)
+            polyline = insert_corner_points(polyline, forbidden)
+
+            if len(polyline) == 2 and not segment_valid(pos, target, forbidden, wafer_radius):
+                continue  
+
+            stage_time = 0.0
+            for k in range(1, len(polyline)):
+                d = euclid(polyline[k-1], polyline[k])
+                stage_time = max(stage_time,trap_time(d, vmax, amax))
+
+            cam_time = trap_time(angle_diff(angle, angles[i]), cam_v, cam_a)
+
+            step_cost = max(stage_time, cam_time)
+
+            if step_cost < best_cost:
+                best_cost = step_cost
+                best_i = i
+                best_polyline = polyline
+
+        if best_i is None:
+            break
+
+        for k in range(1, len(best_polyline)):
+            full_path.append(best_polyline[k])
+
+        total_time += best_cost
+        pos = centers[best_i][:]
+        angle = angles[best_i]
+
+        unvisited.remove(best_i)
+
+    return {
+        "TotalTime": round(total_time, 6),
+        "Path": full_path
+    }
+
+import matplotlib.pyplot as plt
+from matplotlib.patches import Polygon, Circle, Rectangle
+
+def plot_dies(input_data, title="Wafer Dies Plot"):
+    dies = input_data["Dies"]
+    wafer_radius = input_data["WaferDiameter"] / 2
+    initial_pos = input_data["InitialPosition"]
+
+    fig, ax = plt.subplots(figsize=(10,10))
+
+    wafer = Circle((0,0), wafer_radius, fill=False, edgecolor='black', linewidth=2)
+    ax.add_patch(wafer)
+
+    for die in dies:
+        corners = die["Corners"]
+        poly = Polygon(corners, closed=True, fill=True, alpha=0.3, edgecolor='blue')
+        ax.add_patch(poly)
+
+        cx = sum(c[0] for c in corners) / 4
+        cy = sum(c[1] for c in corners) / 4
+        ax.plot(cx, cy, 'ro', markersize=4)
+
+    if "ForbiddenZones" in input_data:
+        for zone in input_data["ForbiddenZones"]:
+            lb = zone["BottomLeft"]   
+            tr = zone["TopRight"]     
+
+            width  = tr[0] - lb[0]
+            height = tr[1] - lb[1]
+
+            rect = Rectangle(
+                (lb[0], lb[1]),
+                width,
+                height,
+                linewidth=2,
+                edgecolor='red',
+                facecolor='red',
+                alpha=0.3,
+                label="Forbidden Zone"
+            )
+            ax.add_patch(rect)
+
+    ax.plot(initial_pos[0], initial_pos[1], 'kx', markersize=10, label="Initial Position")
+
+    ax.set_aspect('equal')
+    ax.set_title(title)
+    ax.set_xlabel("X")
+    ax.set_ylabel("Y")
+    ax.grid(True)
+
+    handles, labels = ax.get_legend_handles_labels()
+    unique = dict(zip(labels, handles))
+    ax.legend(unique.values(), unique.keys())
+
+    plt.show()
+
+
 
 def main():
     while True:
-        print("ENTER THE MILESTONE NUMBER: ")
-        n = int(input())
-        if n==1:
-            with open(r"Software_Workshop_Day1\Day1\TestCases\Milestone1\Input_Milestone1_Testcase3.json","r") as f:
-                input_data = json.load(f)
-            output_M1 = solve_M1(input_data)
-            with open(r"Software_Workshop_Day1\Day1\TestCases\Milestone1\TestCase_1_3.json", "w") as f:
-                json.dump(output_M1, f, indent=2)
-            print(output_M1)
-        elif n == 2:
-            with open(r"Software_Workshop_Day1\Day1\TestCases\Milestone2\Input_Milestone2_Testcase4.json","r") as f:
-                input_data = json.load(f)
-            output_M2 = solve_M2(input_data)
-            
-            with open(r"Software_Workshop_Day1\Day1\TestCases\Milestone2\TestCase_2_4.json", "w") as f:
-                json.dump(output_M2, f, indent=2)
-                
-            print(output_M2)
-        elif n == 3:
-            with open(r"Software_Workshop_Day1\Day1\TestCases\Milestone3\Input_Milestone3_Testcase2.json","r") as f:
-                input_data = json.load(f)
-            output_M3 = solve_M3(input_data)
-            with open(r"Software_Workshop_Day1\Day1\TestCases\Milestone3\TestCase_3_2.json", "w") as f:
-                json.dump(output_M3, f, indent=2)
-            print(output_M3)
-        elif n == 0:
+        print("\nENTER MILESTONE NUMBER (1–4) OR 0 TO EXIT:")
+        milestone = int(input())
+
+        if milestone == 0:
             break
+
+        print("ENTER TESTCASE NUMBER:")
+        testcase = int(input())
+
+        input_path  = f"Software_Workshop_Day1\Day1\TestCases\Milestone{milestone}\Input_Milestone{milestone}_Testcase{testcase}.json"
+        output_path = f"Software_Workshop_Day1\Day1\TestCases\Milestone{milestone}\TestCase_{milestone}_{testcase}.json"
+
+        with open(input_path, "r") as f:
+            input_data = json.load(f)
+        plot_dies(input_data, title=f"Milestone {milestone} - Testcase {testcase}")
+
+        if milestone == 1:
+            result = solve_M1(input_data)
+        elif milestone == 2:
+            result = solve_M2(input_data)
+        elif milestone == 3:
+            result = solve_M3(input_data)
+        elif milestone == 4:
+            result = solve_M4(input_data)
         else:
-            "ENTER 1 OR 2 OR 3"
-            
+            print("Invalid milestone")
+            continue
+
+        with open(output_path, "w") as f:
+            json.dump(result, f, indent=2)
+
+        print(f"\n✅ Output saved to {output_path}")
+        print(result)
+
+
+
 if __name__ == "__main__":
     main()
-
